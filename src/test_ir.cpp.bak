@@ -1,0 +1,43 @@
+#include <Arduino.h>
+#include <IRremote.h>
+
+// 尝试更换引脚，避开可能冲突的 Pin 3
+// 请把红外接收头的信号线(OUT/S) 改插到 Arduino 的 Pin 11
+#define IR_RECEIVE_PIN 11
+
+void setup()
+{
+    Serial.begin(9600);
+    while (!Serial)
+        ; // 等待串口连接
+
+    Serial.println("--- IR Receiver Test (Pin 11) ---");
+
+    // 启动接收，并启用板载 LED 反馈 (接收到信号时板子上的 L 灯会闪)
+    IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
+
+    Serial.print("Ready to receive IR signals at pin ");
+    Serial.println(IR_RECEIVE_PIN);
+}
+
+void loop()
+{
+    if (IrReceiver.decode())
+    {
+        // 打印原始数据，帮助诊断
+        Serial.println("------------------------------------------------");
+        Serial.print("Protocol: ");
+        Serial.print(IrReceiver.decodedIRData.protocol);
+        Serial.print(" | Command: ");
+        Serial.println(IrReceiver.decodedIRData.command);
+
+        // 简单打印
+        Serial.print("Key Code (Decimal): ");
+        Serial.println(IrReceiver.decodedIRData.command);
+        Serial.print("Key Code (Hex): 0x");
+        Serial.println(IrReceiver.decodedIRData.command, HEX);
+
+        // 准备接收下一个信号
+        IrReceiver.resume();
+    }
+}

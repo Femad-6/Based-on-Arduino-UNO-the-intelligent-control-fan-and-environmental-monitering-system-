@@ -1,0 +1,31 @@
+#include <Arduino.h>
+#include <SoftwareSerial.h>
+
+// ESP-01 连接引脚
+// RX (Pin 10) -> ESP-01 TX
+// TX (Pin 11) -> ESP-01 RX
+SoftwareSerial wifiSerial(10, 11);
+
+void setup()
+{
+    Serial.begin(9600);
+    wifiSerial.begin(115200); // ESP-01 默认波特率通常是 115200，如果乱码请试 9600
+
+    Serial.println("ESP8266 AT Command Test");
+    Serial.println("Enter AT commands in Serial Monitor (e.g., AT)");
+}
+
+void loop()
+{
+    // 将串口监视器输入的数据发送给 ESP-01
+    if (Serial.available())
+    {
+        wifiSerial.write(Serial.read());
+    }
+
+    // 将 ESP-01 返回的数据打印到串口监视器
+    if (wifiSerial.available())
+    {
+        Serial.write(wifiSerial.read());
+    }
+}
