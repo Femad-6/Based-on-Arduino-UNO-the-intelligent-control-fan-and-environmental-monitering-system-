@@ -26,11 +26,11 @@ bool manualOverride = false;
 float tempThreshold = 25.0;
 
 // WiFi 配置
-const char *ssid = "vfemad";
-const char *password = "88888888";
+const char *ssid = "wifi_name";
+const char *password = "wifi_password";
 // 电脑端的 IP 地址
 // 请务必修改下面的 IP !!!
-const char *pc_ip = "192.168.90.66";
+const char *pc_ip = "IP_ADDRESS";
 const int pc_port = 8080;
 
 void sendATCommand(String cmd, int waitTime)
