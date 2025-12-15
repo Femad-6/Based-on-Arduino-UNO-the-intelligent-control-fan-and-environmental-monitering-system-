@@ -2,6 +2,6 @@
 .vscode/
 __pycache__/
 *.pyc
-*.hex
+*.hexZ
 *.elf
 *.bin
