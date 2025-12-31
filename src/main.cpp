@@ -2,19 +2,12 @@
 #include <DHT.h>
 #include <IRremote.h>
 #include <Servo.h>
-#include <SoftwareSerial.h>
 #include <string.h>
 
 // DHT11 设置
 #define DHTPIN 2
 #define DHTTYPE DHT11
 DHT dht(DHTPIN, DHTTYPE);
-
-// 蓝牙/WiFi 模块 (SoftwareSerial)
-// 我们复用之前的软串口定义，现在它连接的是 ESP-01
-// RX (Arduino Pin 10) -> ESP-01 TX
-// TX (Arduino Pin 11) -> ESP-01 RX
-SoftwareSerial wifiSerial(10, 11);
 
 // --- 补充缺失的定义 ---
 #define IR_RECEIVE_PIN 3 // 将红外接收脚改为 3，避免与 WiFi (11) 冲突
@@ -223,86 +216,53 @@ static void adjustFanSpeedPercent(int delta)
   setFanSpeedPercent(current + delta);
 }
 
-// WiFi 配置
-const char *ssid = "vfemad";
-const char *password = "88888888";
-// 电脑端的 IP 地址
-// 请务必修改下面的 IP !!!
-const char *pc_ip = "192.168.90.66";
-const int pc_port = 8080;
-
-void sendATCommand(String cmd, int waitTime)
+static int autoSpeedPercentForTemp(float tC)
 {
-  Serial.print("CMD: ");
-  Serial.println(cmd);
-  wifiSerial.println(cmd);
-  delay(waitTime);
+  // 分段线性（用户指定）：
+  // 28-29℃: 0-10%
+  // 29-30℃: 10-30%
+  // 30-31℃: 30-60%
+  // 31-32℃: 60-80%
+  // >32℃: 100%
+  // <28℃: 0%
 
-  bool received = false;
-  while (wifiSerial.available())
+  if (isnan(tC))
+    return 0;
+
+  const float t0 = 28.0f;
+  const float t1 = 29.0f;
+  const float t2 = 30.0f;
+  const float t3 = 31.0f;
+  const float t4 = 32.0f;
+
+  if (tC < t0)
+    return 0;
+  if (tC > t4)
+    return 100;
+
+  // 线性插值 helper
+  auto lerpPercent = [](float x, float a, float b, int pa, int pb) -> int
   {
-    char c = wifiSerial.read();
-    Serial.write(c);
-    received = true;
-  }
-  if (!received)
-  {
-    Serial.println("[No Response]");
-  }
-  else
-  {
-    Serial.println(); // Newline after response
-  }
+    const float denom = (b - a);
+    const float f = (denom == 0.0f) ? 0.0f : (x - a) / denom;
+    const float pf = (float)pa + constrain(f, 0.0f, 1.0f) * (float)(pb - pa);
+    return constrain((int)(pf + 0.5f), 0, 100);
+  };
+
+  if (tC < t1)
+    return lerpPercent(tC, t0, t1, 0, 10);
+  if (tC < t2)
+    return lerpPercent(tC, t1, t2, 10, 30);
+  if (tC < t3)
+    return lerpPercent(tC, t2, t3, 30, 60);
+  // tC 在 [31, 32]：到 32℃ 为 80%，只有“超过 32℃”才 100%
+  return lerpPercent(tC, t3, t4, 60, 80);
 }
 
 void setup()
 {
   Serial.begin(9600);
   pinMode(13, OUTPUT); // 内置 LED 用于指示状态
-
-  // --- 暴力修改波特率逻辑 ---
-  // 1. 假设 ESP 在 115200，尝试发送修改指令
-  wifiSerial.begin(115200);
-  Serial.println("Attempting to force ESP-01 to 9600 baud (Blind Send)...");
-  // 尝试退出透传模式 (以防万一)
-  wifiSerial.print("+++");
-  delay(1100);
-
-  for (int i = 0; i < 3; i++)
-  {
-    wifiSerial.println("AT+UART_DEF=9600,8,1,0,0");
-    delay(200);
-    wifiSerial.println("AT+CIOBAUD=9600");
-    delay(200);
-  }
-  wifiSerial.end();
-  delay(500);
-
-  // 2. 切换到 9600，正式开始
-  wifiSerial.begin(9600);
-  wifiSerial.setTimeout(100); // 设置超时为 100ms，避免 readStringUntil 阻塞太久
-  Serial.println("Initializing WiFi at 9600 baud...");
-
-  // 再次尝试退出透传模式 (如果之前是在 9600 下透传)
-  wifiSerial.print("+++");
-  delay(1100);
-
-  // 测试通信
-  sendATCommand("AT", 1000);
-  sendATCommand("AT+RST", 3000); // 复位让波特率生效
-  sendATCommand("AT+CWMODE=1", 1000);
-
-  String joinCmd = "AT+CWJAP=\"" + String(ssid) + "\",\"" + String(password) + "\"";
-  sendATCommand(joinCmd, 8000); // 连接 WiFi (给足时间)
-
-  // 获取 IP 地址
-  sendATCommand("AT+CIFSR", 1000);
-
-  // 开启 UDP 传输 (连接到电脑)
-  String startCmd = "AT+CIPSTART=\"UDP\",\"" + String(pc_ip) + "\"," + String(pc_port);
-  sendATCommand(startCmd, 2000);
-  sendATCommand("AT+CIPMODE=1", 1000); // 开启透传模式
-  sendATCommand("AT+CIPSEND", 1000);   // 开始发送数据
 
   // 初始化 DHT
   dht.begin();
@@ -327,58 +287,7 @@ void loop()
     digitalWrite(13, !digitalRead(13));
   }
 
-  // --- 1. 优先处理 WiFi 指令 (非阻塞) ---
-  if (wifiSerial.available())
-  {
-    // 重要：SoftwareSerial 收发会长时间关中断，可能导致舵机脉冲异常 -> 舵机“突然跳动”。
-    // 这里在收发期间临时 detach，结束后再 attach。
-    servoDetachIfNeeded();
-
-    String wifiCmd = wifiSerial.readStringUntil('\n');
-    wifiCmd.trim();        // 去除首尾空格
-    wifiCmd.toUpperCase(); // 转大写
-
-    if (wifiCmd.length() > 0)
-    {
-      // [DEBUG] 回显指令
-      wifiSerial.print("CMD_RECV: ");
-      wifiSerial.println(wifiCmd);
-      Serial.print("WiFi CMD: ");
-      Serial.println(wifiCmd);
-
-      if (wifiCmd == "AUTO")
-      {
-        manualOverride = false;
-        Serial.println("Mode: AUTO");
-        wifiSerial.println("OK: Mode set to AUTO");
-      }
-      else if (wifiCmd == "MANUAL")
-      {
-        manualOverride = true;
-        Serial.println("Mode: MANUAL");
-        wifiSerial.println("OK: Mode set to MANUAL");
-      }
-      else if (wifiCmd.startsWith("SPEED:"))
-      {
-        int splitIndex = wifiCmd.indexOf(':');
-        if (splitIndex > 0)
-        {
-          String valStr = wifiCmd.substring(splitIndex + 1);
-          int newSpeed = valStr.toInt();
-          manualOverride = true;
-          fanSpeed = constrain(newSpeed, 0, 255);
-          Serial.print("Set Speed: ");
-          Serial.println(fanSpeed);
-          wifiSerial.print("OK: Speed set to ");
-          wifiSerial.println(fanSpeed);
-        }
-      }
-    }
-
-    servoAttachIfNeeded();
-  }
-
-  // --- 2. 处理红外遥控信号 (非阻塞) ---
+  // --- 1. 处理红外遥控信号 (非阻塞) ---
   if (IrReceiver.decode())
   {
     auto &data = IrReceiver.decodedIRData;
@@ -459,25 +368,13 @@ void loop()
     // 3.2 逻辑控制 (自动模式)
     if (!manualOverride && !isnan(t))
     {
-      if (t >= tempThreshold)
-      {
-        int baseSpeed = 128;
-        float excessTemp = t - tempThreshold;
-        int dynamicSpeed = baseSpeed + (excessTemp * 25);
-        fanSpeed = constrain(dynamicSpeed, 0, 255);
-      }
-      else
-      {
-        fanSpeed = 0;
-      }
+      const int autoPercent = autoSpeedPercentForTemp(t);
+      fanSpeed = percentToPwm(autoPercent);
     }
 
-    // 3.3 发送状态到 WiFi
+    // 3.3 输出状态到串口（已移除 WiFi 模块）
     String statusMsg = "Temp: " + String(t, 1) + "C | Hum: " + String(h, 1) + "% | Set: " + String(tempThreshold) + "C | Mode: " + (manualOverride ? "MAN" : "AUTO") + " | Speed: " + String(map(fanSpeed, 0, 255, 0, 100)) + "%";
 
     Serial.println(statusMsg);
-    servoDetachIfNeeded();
-    wifiSerial.println(statusMsg);
-    servoAttachIfNeeded();
   }
 }
